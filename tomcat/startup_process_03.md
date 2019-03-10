@@ -6,7 +6,7 @@
 
 1. APR和AJP是什么
 2. Tomcat中`Connector`组件`init()`、`start()`过程
-3. Tomcat提供了有哪些线程IO模型，以及各个模型的优缺点分析。
+3. Tomcat提供了有哪些IO模型及线程模型，以及各个模型的优缺点分析。
 4. 各种调优参数说明
 
 ## APR和AJP是什么
@@ -217,19 +217,20 @@ public void start() throws Exception {
 
 ## NioEndpoint
 
-先来一张总体的继承图：
+在`Http11NioProtocol`中多次出现了`NioEndpoint`的身影，我们先来看下它的总体继承关系图：
 
 ![](./images/tomcat_startup_process_03_04.png)
 
-`AbstractProtocol`作为抽象类，具体实现子类有以下几种，每一种都代表了不同的线程模型。
+`AbstractProtocol`作为抽象的基类类，根据不同的IO模型，具体实现子类有以下几种：
 
-1. `JIoEndpoint` 阻塞IO，在Tomcat 8.5.x版本以后被移除。
+1. `JIoEndpoint` 同步阻塞IO，在Tomcat 8.5.x版本以后被移除。
 2. `AprEndpoint` 根据平台不同而不同
-3. `NioEndpoint`、`Nio2Endpoint` 非阻塞IO
+3. `NioEndpoint` 同步非阻塞IO
+4. ``Nio2Endpoint` 异步非阻塞IO
 
 ### 初始化
 
-介绍完不同的`Endpoint`后，继续分析`NioEndpoint`初始化过程。`NioEndpoint`的`init`方法会调用父类`AbstractProtocol`的`init`方法，`init`方法又会调用具体子类实现的`bind`方法。熟悉Socket编程的各位见到`bind`方法是不是很亲切，大体就可以猜测到这个方法是用来建立默认8080端口的监听，等待请求连接过来，具体内容如下：
+介绍完不同种类的`Endpoint`后，我们`NioEndpoint`为例继续分析它的初始化过程。`NioEndpoint`的`init`方法会调用父类`AbstractProtocol`的`init`方法，`init`方法又会调用具体子类实现的`bind`方法。熟悉Socket编程的各位见到`bind`方法是不是很亲切，大体就可以猜测到这个方法是用来建立默认8080端口的监听，等待连接请求，具体内容如下：
 
 ```java
 public void bind() throws Exception {
@@ -317,15 +318,17 @@ public void startInternal() throws Exception {
 
 1. `createExecutor()`创建线程池（默认情况下初始化大小为10，最大值为200）
 2. `initializeConnectionLatch()`连接数量限制器（默认连接上限10000）。
-3. 创建`Acceptor`以及`Poller`，默认大小均为1。
+3. 创建`Acceptor`以及`Poller`工作线程。（初始化的时候设置默认大小为1）
 
-## Reactor模式
+## 线程模型
 
-
-
-Acceptor内容如下：
+`Acceptor`内容如下：
 
 ```java
+/**
+  * The background thread that listens for incoming TCP/IP connections and
+  * hands them off to an appropriate processor.
+  */
 protected class Acceptor extends AbstractEndpoint.Acceptor {
 
     @Override
@@ -379,6 +382,7 @@ protected class Acceptor extends AbstractEndpoint.Acceptor {
                 if (running && !paused) {
                     // setSocketOptions() will hand the socket off to
                     // an appropriate processor if successful
+                    // 将创建的Socket注册到Poller中
                     if (!setSocketOptions(socket)) {
                         closeSocket(socket);
                     }
@@ -394,6 +398,71 @@ protected class Acceptor extends AbstractEndpoint.Acceptor {
     }
 }
 ```
+
+`Acceptor`的主要负责连接的建立和关闭，以及将新建立的Socket注册到`Poller`上。
+
+`Poller`工作内容代码内容如下：
+
+```java
+/**
+ * The background thread that adds sockets to the Poller, checks the
+ * poller for triggered events and hands the associated socket off to an
+ * appropriate processor as events occur.
+ */
+@Override
+public void run() {
+    // Loop until destroy() is called
+    while (true) {
+		// 省略非主要代码
+      	Iterator<SelectionKey> iterator =
+            keyCount > 0 ? selector.selectedKeys().iterator() : null;
+        // Walk through the collection of ready keys and dispatch
+        // any active event
+        while (iterator != null && iterator.hasNext()) {
+            SelectionKey sk = iterator.next();
+            NioSocketWrapper attachment = (NioSocketWrapper)sk.attachment();
+            // Attachment may be null if another thread has called
+            // cancelledKey()
+            if (attachment == null) {
+                iterator.remove();
+            } else {
+                iterator.remove();
+                processKey(sk, attachment);
+            }
+        }//while
+
+        //process timeouts
+        timeout(keyCount,hasEvents);
+    }//while
+
+    getStopLatch().countDown();
+}
+```
+
+`Poller`负责轮询遍历`Selector`中的事件并将事件分发出去，交给线程池排队处理。整体的处理流程如下图所示：
+
+![](./images/tomcat_startup_process_03_06.png)
+
+## 调优
+
+1. 在Tomcat配置文件中默认使用了两种协议的`Connector`，一种用于支持HTTP/1.1，一种用于AJP协议，由于AJP协议大多数情况下我们并不会使用。每个Connector都会启动`Acceptor`、`Poller`以及工作线程池，对线程资源的消耗不可小视，可以注释掉相关的配置。（配一张AJP协议启动的线程以供参考）
+
+   ![](./images/tomcat_startup_process_03_07.png)
+
+2. 线程池线程数量。
+
+   `Connector`默认配置内容如下
+
+   ```xml
+   <Connector port="8080" protocol="HTTP/1.1"  connectionTimeout="20000"  redirectPort="8443" />
+   ```
+
+   `Connector`初始化时默认工作线程池大小为10，最大值为200。根据业务场景以及硬件配置合理的调整`maxThreads`的值。同时由于线程池本生对线程的创建和回收也会占用一部分资源，可以考虑将线程的`corePoolSize`和`maximumPoolSize`设置为相同的数量。让Tomcat启动时就初始到最大值的工作线程，而不是等待请求到来之后再去创建。
+
+3. 连接数量`maxConnections`，这个参数是用来指定单机Tomcat同一时刻可接受最大连接上限，NIO模式下默认值是10000。可以理解为可以同时支持10000个用户并发的访问，如果这里成为了瓶颈可以适当的调整。
+4. 连接队列排队上限`maxConnections`，这个是指当`Acceptor`工作线程来不及处理接收来自客户端连接的请求时，允许的排队上限，默认值是100。如果值设定太小，则会出现同时接收到大量请求时由于`Acceptor`来不及处理并且队列也满了而造成的大量请求被拒绝。如果设定的太大，又会造成后续的响应时间被拉长。
+
+5. 协议的选择`protocol`，除了可配置为`HTTP/1.1`和`AJP/1.3`让Tomcat自己根据不同条件适配，我们也可以直接指定对应的处理类。比如可以选择AIO模式的处理类`org.apache.coyote.http11.Http11Nio2Protocol`。当然更好选择是使用APR模式，只要将Tomcat依赖的APR环境配置完成即可，Tomcat可以自动检测发现并启用。
 
 ## 番外Tomcat与TCP
 
