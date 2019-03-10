@@ -1,9 +1,23 @@
-## Tomcat启动流程（上）
+Table of Contents
+=================
 
-### 前言
+* [Tomcat启动流程（上）](#tomcat%E5%90%AF%E5%8A%A8%E6%B5%81%E7%A8%8B%E4%B8%8A)
+  * [前言](#%E5%89%8D%E8%A8%80)
+  * [从startup\.sh说起](#%E4%BB%8Estartupsh%E8%AF%B4%E8%B5%B7)
+  * [一切起源于main函数](#%E4%B8%80%E5%88%87%E8%B5%B7%E6%BA%90%E4%BA%8Emain%E5%87%BD%E6%95%B0)
+    * [init()方法](#init%E6%96%B9%E6%B3%95)
+      * [setAwait()方法](#setawait%E6%96%B9%E6%B3%95)
+    * [load()方法](#load%E6%96%B9%E6%B3%95)
+      * [start()方法](#start%E6%96%B9%E6%B3%95)
+    * [写在最后](#%E5%86%99%E5%9C%A8%E6%9C%80%E5%90%8E)
+
+
+# Tomcat启动流程（上）
+
+## 前言
 承接Tomcat开门篇，如果还未有看过的老铁点击[传送门](./overview.md)。上篇简单介绍了各个主要组件的功能作用，本篇通过分析Tomcat Server的启动流程，了解下各个组件之间是如何相互的协作完成启动的工作。为了减少篇幅，会针对非关键性代码做一定的省略。
 
-### 从startup.sh说起
+## 从startup.sh说起
 
 正常启动tomcat的流程，命令行运行`./startup.sh start` 完事。透过表象看本质，脚本里到底哪些工作
 
@@ -76,7 +90,7 @@ $_NOHUP "\"$_RUNJAVA\"" "\"$LOGGING_CONFIG\"" $LOGGING_MANAGER $JAVA_OPTS $CATAL
 
 终于看到了Tomcat的启动类`org.apache.catalina.startup.Bootstrap`并在这里传入了`start`的启动命令。
 
-### 一切起源于main函数
+## 一切起源于main函数
 
 终于来到了`Bootstrap`类中的`main()`方法，内容简写（省略非关键性代码）如下：
 
@@ -101,7 +115,7 @@ if (command.equals("start")) {
 
 这里通过`init()`初始化了`Bootstrap`,然后再调用`setAwait()`、`load()`、`start()`方法。
 
-#### init()方法
+### init()方法
 
 ```java
 public void init() throws Exception {
@@ -145,7 +159,7 @@ public void init() throws Exception {
 
 将`await`变量设置为`true`，具体作用可以查看在关闭流程中的分析，[传送门](./shutdown_process.md)。
 
-#### load()方法
+### load()方法
 
 ```java
 /**

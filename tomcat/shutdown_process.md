@@ -1,12 +1,25 @@
-## Tomcat的关闭流程
+Table of Contents
+=================
 
-### 前言背景
+* [Tomcat的关闭流程](#tomcat%E7%9A%84%E5%85%B3%E9%97%AD%E6%B5%81%E7%A8%8B)
+  * [前言背景](#%E5%89%8D%E8%A8%80%E8%83%8C%E6%99%AF)
+  * [两种关闭方式](#%E4%B8%A4%E7%A7%8D%E5%85%B3%E9%97%AD%E6%96%B9%E5%BC%8F)
+    * [通过端口方式](#%E9%80%9A%E8%BF%87%E7%AB%AF%E5%8F%A3%E6%96%B9%E5%BC%8F)
+      * [await()](#await)
+      * [stop()](#stop)
+    * [通过脚本方式](#%E9%80%9A%E8%BF%87%E8%84%9A%E6%9C%AC%E6%96%B9%E5%BC%8F)
+  * [彩蛋](#%E5%BD%A9%E8%9B%8B)
+
+
+# Tomcat的关闭流程
+
+## 前言背景
 
 和同启动流程一样，关闭流程也是通过脚本`shutdown.sh`进行，调用的也是`catalina.sh`脚本，最终执行`Bootstrap`类的主函数，并传入了`stop`命令行参数。还有一种通过监听端口8005，收到指定的**SHUTDOWN**关闭命令，然后关闭。
 
-### 两种关闭方式
+## 两种关闭方式
 
-#### 通过端口方式
+### 通过端口方式
 
 从启动流程中我们可以得知，启动的工作都是由`Bootstrap`通过调用`Catalina`一系列方法来完成的。我们这里仅仅关注启动时对`daemon.setAwait(true)`的调用，追踪源码会发现最终是设置了`Catalina`的`await`为**true**。那么`Catalina`中使用到`await`代码端如下：
 
@@ -23,7 +36,7 @@ public void start() {
 }
 ```
 
-##### await()
+#### await()
 
 进一步追踪await()到`StandardServer`,内容如下：
 
@@ -144,11 +157,11 @@ public void await() {
 2. 读取输入流里的内容解析成字符串，并判断是否和预留的**SHUTDOWN**字符串相同。
 3. 如果相同则关闭监听，如果不同则一直循环。
 
-##### stop()
+#### stop()
 
 当8005的监听退出时，后续继续调用`Catalina`中的`stop()`方法。
 
-#### 通过脚本方式
+### 通过脚本方式
 在前言中有提到通过脚本方式实际也是通过调用`Bootstrap`中的`main()`方法，并传入`stop`的命令行参数。那么处理`stop`命令部分的代码简化之后如下：
 
 ```java
@@ -239,7 +252,7 @@ public void stop() {
 
 这样看起来是不是简洁很多^-^，`getServer()`获取`StandardServer`实例调用其对应的`stop()`、`destroy()`方法。然后`StandardServer`在调用其内部管理的各个`Service`组件，`Service`组件在调用其管理的内部组件...。一次类推，俄罗斯套娃般。等到最后一个组件被关闭，tomcat的生命也就走向了终点。。。
 
-### 彩蛋
+## 彩蛋
 如何才能禁用8005端口这种方式关闭后门呢？
 
 ```java

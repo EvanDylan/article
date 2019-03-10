@@ -1,3 +1,25 @@
+Table of Contents
+=================
+
+* [Tomcat启动流程（下）](#tomcat%E5%90%AF%E5%8A%A8%E6%B5%81%E7%A8%8B%E4%B8%8B)
+  * [前言](#%E5%89%8D%E8%A8%80)
+  * [APR和AJP是什么](#apr%E5%92%8Cajp%E6%98%AF%E4%BB%80%E4%B9%88)
+    * [APR（<a href="https://en\.wikipedia\.org/wiki/Apache\_Portable\_Runtime" rel="nofollow">Apache Portable Runtime</a>）](#aprapache-portable-runtime)
+    * [AJP（<a href="https://en\.wikipedia\.org/wiki/Apache\_JServ\_Protocol" rel="nofollow">Apache JServ Protocol</a>）](#ajpapache-jserv-protocol)
+  * [Connector](#connector)
+    * [Connector组件的初始化](#connector%E7%BB%84%E4%BB%B6%E7%9A%84%E5%88%9D%E5%A7%8B%E5%8C%96)
+    * [Connector组件启动](#connector%E7%BB%84%E4%BB%B6%E5%90%AF%E5%8A%A8)
+  * [Http11NioProtocol组件](#http11nioprotocol%E7%BB%84%E4%BB%B6)
+    * [如何选择合适的协议处理类](#%E5%A6%82%E4%BD%95%E9%80%89%E6%8B%A9%E5%90%88%E9%80%82%E7%9A%84%E5%8D%8F%E8%AE%AE%E5%A4%84%E7%90%86%E7%B1%BB)
+    * [初始化及启动](#%E5%88%9D%E5%A7%8B%E5%8C%96%E5%8F%8A%E5%90%AF%E5%8A%A8)
+  * [NioEndpoint](#nioendpoint)
+    * [初始化](#%E5%88%9D%E5%A7%8B%E5%8C%96)
+    * [启动](#%E5%90%AF%E5%8A%A8)
+  * [线程模型](#%E7%BA%BF%E7%A8%8B%E6%A8%A1%E5%9E%8B)
+  * [调优](#%E8%B0%83%E4%BC%98)
+  * [番外Tomcat与TCP](#%E7%95%AA%E5%A4%96tomcat%E4%B8%8Etcp)
+
+
 # Tomcat启动流程（下）
 
 ## 前言

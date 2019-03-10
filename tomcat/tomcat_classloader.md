@@ -1,10 +1,24 @@
-## Tomcat中的类加载机制
+Table of Contents
+=================
 
-### JDK类加载器
+* [Tomcat中的类加载机制](#tomcat%E4%B8%AD%E7%9A%84%E7%B1%BB%E5%8A%A0%E8%BD%BD%E6%9C%BA%E5%88%B6)
+  * [JDK类加载器](#jdk%E7%B1%BB%E5%8A%A0%E8%BD%BD%E5%99%A8)
+    * [JDK中的三种类加载器：](#jdk%E4%B8%AD%E7%9A%84%E4%B8%89%E7%A7%8D%E7%B1%BB%E5%8A%A0%E8%BD%BD%E5%99%A8)
+    * [JDK类加载器加载规则：](#jdk%E7%B1%BB%E5%8A%A0%E8%BD%BD%E5%99%A8%E5%8A%A0%E8%BD%BD%E8%A7%84%E5%88%99)
+  * [JDK类加载机制利和弊](#jdk%E7%B1%BB%E5%8A%A0%E8%BD%BD%E6%9C%BA%E5%88%B6%E5%88%A9%E5%92%8C%E5%BC%8A)
+  * [Tomcat类加载机制](#tomcat%E7%B1%BB%E5%8A%A0%E8%BD%BD%E6%9C%BA%E5%88%B6)
+    * [Tomcat所有的类加载器总览](#tomcat%E6%89%80%E6%9C%89%E7%9A%84%E7%B1%BB%E5%8A%A0%E8%BD%BD%E5%99%A8%E6%80%BB%E8%A7%88)
+    * [Tomcat体系下各个类加载器以及其默认加载内容](#tomcat%E4%BD%93%E7%B3%BB%E4%B8%8B%E5%90%84%E4%B8%AA%E7%B1%BB%E5%8A%A0%E8%BD%BD%E5%99%A8%E4%BB%A5%E5%8F%8A%E5%85%B6%E9%BB%98%E8%AE%A4%E5%8A%A0%E8%BD%BD%E5%86%85%E5%AE%B9)
+    * [一个Tomcat Web 应用查找类和资源的时候默认的查找顺序](#%E4%B8%80%E4%B8%AAtomcat-web-%E5%BA%94%E7%94%A8%E6%9F%A5%E6%89%BE%E7%B1%BB%E5%92%8C%E8%B5%84%E6%BA%90%E7%9A%84%E6%97%B6%E5%80%99%E9%BB%98%E8%AE%A4%E7%9A%84%E6%9F%A5%E6%89%BE%E9%A1%BA%E5%BA%8F)
+
+
+# Tomcat中的类加载机制
+
+## JDK类加载器
 
 在开始Tomcat自定义类加载机制之前，简单了解下正统的JDK中的类加载机制。
 
-#### JDK中的三种类加载器：
+### JDK中的三种类加载器：
 
 - 最顶层加载器`Bootstrap ClassLoader`，加载JVM运行期间需要的核心类库（rt.jar等），由底层c实现。加载的目录列表可通过运行`Arrays.stream(System.getProperty("sun.boot.class.path").split(";")).forEach(System.out::println);`获得目录地址。
 
@@ -14,7 +28,7 @@
 
 - Custom ClassLoader 自定义加载器。
 
-#### JDK类加载器加载规则：
+### JDK类加载器加载规则：
 
 - 自下向上查找。
 
@@ -24,7 +38,7 @@
 
 总体来讲在加载一个类的时候按照`AppClassLoader` >> `ExtClassLoader` >>  `Bootstrap ClassLoader`的顺序依次查找有没有加载，如果已经加载则直接返回被加载过的类对象，如果没有被加载过则继续按照这个顺序传递继续查找。假设一直到`Bootstrap ClassLoader`这一层还是没有找到，则会执行**自上到下加载的规则**。按照`Bootstrap ClassLoader`>> `ExtClassLoader` >> `AppClassLoader `顺序查找各自目录下有无指定的类，如果有则载入结束，如果没有则向下传递继续查找直至找到或者抛出`ClassNotFoundException`。
 
-### JDK类加载机制利和弊
+## JDK类加载机制利和弊
 - 优点
   JDK类加载机制带来的好处是，使得被加载的类随着它的加载器具备一种带有优先级的层级关系。可以保证核心类的稳定性，不能被随意的修改。
 
@@ -33,13 +47,13 @@
 
   ![](./images/tomcat_classloader_02.jpg)
 
-### Tomcat类加载机制
+## Tomcat类加载机制
 
-#### Tomcat所有的类加载器总览
+### Tomcat所有的类加载器总览
 
 ![](./images/tomcat_classloader_03.jpg)
 
-#### Tomcat体系下各个类加载器以及其默认加载内容
+### Tomcat体系下各个类加载器以及其默认加载内容
 - Bootstrap ClassLoader
 
 - Ext ClassLoader
@@ -80,7 +94,7 @@
 
   仅加载和Jsp编译之后的class文件相关的类文件。
 
-#### 一个Tomcat Web 应用查找类和资源的时候默认的查找顺序
+### 一个Tomcat Web 应用查找类和资源的时候默认的查找顺序
 
 - 默认的加载顺序
   1. 首先查找由Bootstrap ClassLoader所加载的类资源
