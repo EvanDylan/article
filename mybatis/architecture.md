@@ -17,7 +17,7 @@
 
 ###  SqlSession创建
 
-![](./images/03_02.jpg)
+![](./images/03_02.png)
 
 ###mapper代理类创建
 
@@ -25,6 +25,4 @@
 
 ### select执行
 
-![](./images/03_04.jpg)
-
-高清大图请点击[链接](https://www.processon.com/view/link/5c8b53a2e4b0f88919af568d)
+![](./images/03_04.png)
