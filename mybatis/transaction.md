@@ -6,7 +6,7 @@
 
 ## 事务的抽象与实现
 
-Mybatis选择抽象出自己的`Transaction`接口，内容如下
+Mybatis抽象出的`Transaction`接口，内容如下
 
 ![](./images/04_01.png)
 
