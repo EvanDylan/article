@@ -42,7 +42,7 @@ public void queryUserTest() {
 
 可以看出同一个SqlSession内的第二次查询不再从缓存中获取，而是直连db查询。
 
-### 深究实现原理
+### 探究实现原理
 
 上面我们讨论完了一级缓存的利与弊，下面我们从源码上一起来探究一级缓存究竟是如何被写入和缓存的更新机制。
 
@@ -241,7 +241,7 @@ public void secondLevelCacheTest() {
     UserMapper userMapper = sqlSession.getMapper(UserMapper.class);
     UserMapper userMapper2 = sqlSession2.getMapper(UserMapper.class);
     userMapper.queryUser(1L);
-    sqlSession.close();
+    sqlSession.commit();
     userMapper2.queryUser(1L);
 }
 ```
@@ -252,7 +252,7 @@ public void secondLevelCacheTest() {
 
 通过控制台输出可以看到我们第二次查询成功了命中了第一次查询时的缓存。
 
-那么我们在Mappr文件中加入了一行`<cache/>`，默认会启用以下的效果：
+那么我们在Mapper文件中加入了一行`<cache/>`，默认会启用以下的效果：
 
 - Mapper中所有的查询结果将会被缓存。
 - `insert`、`update`、`delete`语句会刷新缓存。
@@ -272,7 +272,7 @@ public void secondLevelCacheTest() {
   - `WEAK` 使用弱引用建立的缓存
 - `flushInterval` 缓存刷新间隔，可以设置为任意的整数（毫秒为单位），默认不刷新。所谓刷新不是Mybatis主动和数据库同步数据，仅仅是清空缓存，而且是被动式清除。
 - `size` 设定缓存的可以存放结果集数量上限，默认大小1024。
-- `readOnly` 是否为只读，可设定为`true`或者`false`，默认为false。如果设定为`true`，则每次都返回同一个实例，如果对返回的对象进行了更新操作，那么缓存的值就会被污染。如果设定为`false`（需要缓存的对象实现`Serializable`接口），则每次都通过反序列化的方式返回一个新的对象，那么对返回的对象再怎么操作操作，也不会污染真正的缓存。
+- `readOnly` 是否为只读，可设定为`true`或者`false`，默认为false。如果设定为`true`，则每次都返回同一个实例，如果对返回的对象进行了更新操作，那么缓存的值就会被污染。如果设定为`false`（需要缓存的对象实现`Serializable`接口），则每次都通过反序列化的方式返回一个新的对象，那么对返回的对象再怎么操作，也不会污染真正的缓存。
 - `blocking`  可设定为`true`或者`false`，默认为false。设定为`true`时，查询前会以当前缓存key为维度建立可重入锁，如果查询命中不到缓存，会阻塞其他的线程继续访问数据库，直到缓存有数据。
 - `type` 可以自定实现`Cache`接口，指定自定义实现了`Cache`接口的全类名。
 
@@ -280,19 +280,279 @@ public void secondLevelCacheTest() {
 
 ![](./images/05_09.png)
 
-灰色的为全部的实现类，绿色部分为默认的缓存功能组合，及`<cache/>`时会使用绿色框内的全部功能，到这里相信大家已经对二级缓存有了全局的认识，下面我们按照一级缓存的分析套路研究其具体的源码，分析其缓存的使用、写入淘汰等细节实现。
+灰色的为全部的实现类，绿色部分为默认的缓存功能组合。到这里相信大家已经对二级缓存有了全局的认识，下面我们按照一级缓存的分析套路研究其具体的源码，分析其缓存的使用、写入淘汰等细节实现。
 
+### 探究实现原理
 
-
-
-
-## 执行流程
-
-在请求过程中缓存作用流程
+查询时序图如下
 
 ![](./images/05_10.png)
 
-## 作用域与生命周期
+
+对比一级缓存的查询流程，时序图中特意将之前省略掉的`CachingExecutor`补充上。`CachingExecutor`包含了二级缓存实现的关键步骤，`query`部分代码如下：
+
+```java
+public <E> List<E> query(MappedStatement ms, Object parameterObject, RowBounds rowBounds, ResultHandler resultHandler, CacheKey key, BoundSql boundSql)
+      throws SQLException {
+    // 获取二级缓存，如果Mapper中没有配置则返回为空（二级缓存是以Mapper的namespace为维度划分）
+    Cache cache = ms.getCache();
+    if (cache != null) {
+      // 在查询之前是否清除二级缓存
+      flushCacheIfRequired(ms);
+      // 是否使用缓存
+      if (ms.isUseCache() && resultHandler == null) {
+        // 二级缓存不知道存储过程中使用OUT参数
+        ensureNoOutParams(ms, boundSql);
+        @SuppressWarnings("unchecked")
+        // 获取缓存
+        List<E> list = (List<E>) tcm.getObject(cache, key);
+        if (list == null) {
+          // 执行DB查询
+          list = delegate.query(ms, parameterObject, rowBounds, resultHandler, key, boundSql);
+          // 放入缓存
+          tcm.putObject(cache, key, list);
+        }
+        return list;
+      }
+    }
+    return delegate.query(ms, parameterObject, rowBounds, resultHandler, key, boundSql);
+  }
+```
+
+跟一级缓存差不多的套路，有以下点要重点说下：
+
+- 如果没有在Mapper文件中配置`<cache/>`，那么`ms.getCache();`就获取不到Mapper对应的二级缓存，及二级缓存没有启用。
+- 如果配置Mapper中SQL配置`flushCache=true`，那么`flushCacheIfRequired(ms)`这一行代码，会将二级缓存强制清空，执行任何的SQL都不会命中二级缓存。
+- 二级缓存不支持存储过程中使用OUT参数。
+- `tcm.putObject(cache, key, list);`此时缓存还没有起作用，还需要后续`TransactionalCacheManager`对缓存进行`commit()`操作。
+
+更新操作时序图如下，较一级缓存也是多出了`CachingExecutor`一层，二级缓存的刷新策略也是在这一层实现。
+
+![](./images/05_11.png)
+
+`CachingExecutor`的`update`的内容源码如下：
+
+```java
+public int update(MappedStatement ms, Object parameterObject) throws SQLException {
+  // 刷新缓存
+  flushCacheIfRequired(ms);
+  return delegate.update(ms, parameterObject);
+}
+```
+
+内容非常的简单，如果配置而二级缓存并配置了`flushCache="true"`选项，那么执行增删改的时候缓存将会被清除。
+
+### 二级缓存中的事务
+
+在介绍二级缓存时，单元测试的代码如下，代码中必须显示的调用`SqlSession`关闭方法才能使缓存生效：
+
+```java
+@Test
+public void secondLevelCacheTest() {
+    UserMapper userMapper = sqlSession.getMapper(UserMapper.class);
+    UserMapper userMapper2 = sqlSession2.getMapper(UserMapper.class);
+    User user = userMapper.queryUser(1L);
+    // 必须提交事务缓存才能生效
+    sqlSession.commit();
+    User user2 = userMapper2.queryUser(1L);
+    System.out.println(user == user2);
+}
+```
+
+这个是因为Mybatis对二级缓存抽象了事务的概念，会随着数据库操作的`commit()`、`rollback()`而提交或者回滚缓存的资源。
+
+继续追踪在`CachingExecutor`中执行`query`操作时放入缓存的代码`tcm.putObject(cache, key, list);`，源码内容如下：
+
+```java
+public class TransactionalCacheManager {
+  /**
+   * 将Cache通过getTransactionalCache()方法的调用，通过装饰器模式创建一个新的TransactionalCache与原来的Cache对应
+   */
+  private final Map<Cache, TransactionalCache> transactionalCaches = new HashMap<>();
+
+  public void clear(Cache cache) {
+    getTransactionalCache(cache).clear();
+  }
+
+  public Object getObject(Cache cache, CacheKey key) {
+    return getTransactionalCache(cache).getObject(key);
+  }
+
+  public void putObject(Cache cache, CacheKey key, Object value) {
+    getTransactionalCache(cache).putObject(key, value);
+  }
+
+  public void commit() {
+    for (TransactionalCache txCache : transactionalCaches.values()) {
+      txCache.commit();
+    }
+  }
+
+  public void rollback() {
+    for (TransactionalCache txCache : transactionalCaches.values()) {
+      txCache.rollback();
+    }
+  }
+
+  private TransactionalCache getTransactionalCache(Cache cache) {
+    return transactionalCaches.computeIfAbsent(cache, TransactionalCache::new);
+  }
+}
+```
+
+可以看到`TransactionalCacheManager`内部维护了`transactionalCaches`来映射原来的`Cache`以及进一步装饰过的`TransactionalCache`关系，`clear`、`getObject`、`putObject`、`commit`、`rollback`等操作都是通过委托`TransactionalCache`来实现，那么我们下面来一起学习下这个二级缓存的事务性实现的核心类。
+
+源码中文档对它的功能描述信息如下：
+
+> ```
+> The 2nd level cache transactional buffer.
+> This class holds all cache entries that are to be added to the 2nd level cache during a Session.
+> Entries are sent to the cache when commit is called or discarded if the Session is rolled back.
+> Blocking cache support has been added. Therefore any get() that returns a cache miss
+> will be followed by a put() so any lock associated with the key can be released.
+> ```
+
+大意是：它是二级缓存事务缓冲区。在一个SqlSession声明周期内，保持了即将被添加的所有缓存。当事务提交时缓存会被添加到真正的缓存集合中，当事务回滚时，缓存将被忽略。最后一句话极具误导性。。。，标注说支持阻塞性缓存，阻塞性缓存是由`BlockingCache`提供功能实现，而且默认是不开启该功能，跟这个类半毛钱关系都没有，不知道为什么要在这个地方提这点！下面是`TransactionalCacheManager`的UML类图，可从整体上看到有哪些属性及对外功能方法，对类功能的理解非常有用。
+
+![](./images/05_12.png)
+
+属性有：
+
+- `delegate` 委派对象，其他的功能，比如提供命中率统计、提供线程安全、提供缓存功能等等都是通过委派一层层传递，将各个功能组合在一起。（同源加委派很容易想到装饰器模式）
+- `clearOnCommit` 事务提交的时候是否清空缓存，默认为`false`，当配置了`flushCache="true"`时值就变为`true`
+- `entriesToAddOnCommit` 在事务`commit`时需要正真提交的缓存集合
+- `entriesMissedInCache` 未命中的缓存集合，在事务`commit`时通过将缓存值放入null的方式预占位后，再放入的缓存集合中。这里卖个关子，提出个小问题问题：“为什么没有命中的缓存通过放入null的方式也要放到缓存集合中？设计的目的和意义是什么？”
+
+方法实现部分源码如下，加了比较相信的中文注释，相信对于大家理解会有一定的帮助。
+
+```java
+public class TransactionalCache implements Cache {
+
+  private static final Log log = LogFactory.getLog(TransactionalCache.class);
+
+  private final Cache delegate;
+  private boolean clearOnCommit;
+  private final Map<Object, Object> entriesToAddOnCommit;
+  private final Set<Object> entriesMissedInCache;
+
+  public TransactionalCache(Cache delegate) {
+    this.delegate = delegate;
+    this.clearOnCommit = false;
+    this.entriesToAddOnCommit = new HashMap<>();
+    this.entriesMissedInCache = new HashSet<>();
+  }
+
+  @Override
+  public String getId() {
+    return delegate.getId();
+  }
+
+  @Override
+  public int getSize() {
+    return delegate.getSize();
+  }
+
+  @Override
+  public Object getObject(Object key) {
+    // 从缓存集合中获取缓存
+    Object object = delegate.getObject(key);
+    if (object == null) {
+      // 缓存为空时记录下key，在commit时会将没有命中的缓存，统一设置值为NULL放入缓存集合中
+      entriesMissedInCache.add(key);
+    }
+    // 如果配置了flushCache="true"的选项，这里clearOnCommit值为true
+    if (clearOnCommit) {
+      // 不使用缓存值，返回null
+      return null;
+    } else {
+      // 返回缓存
+      return object;
+    }
+  }
+
+  @Override
+  public ReadWriteLock getReadWriteLock() {
+    return null;
+  }
+
+  @Override
+  public void putObject(Object key, Object object) {
+    // 将需要缓存的值方法暂存集合
+    entriesToAddOnCommit.put(key, object);
+  }
+
+  @Override
+  public Object removeObject(Object key) {
+    return null;
+  }
+
+  @Override
+  public void clear() {
+    clearOnCommit = true;
+    entriesToAddOnCommit.clear();
+  }
+
+  public void commit() {
+    // 如果配置了flushCache="true"，那么将清空之前的二级缓存。
+    if (clearOnCommit) {
+      delegate.clear();
+    }
+    // 将缓冲区的缓存加入到缓存集合中
+    flushPendingEntries();
+    // 重置属性
+    reset();
+  }
+
+  public void rollback() {
+    // 撤销之前没有命中缓存的在缓存集合中的预占位
+    unlockMissedEntries();
+    // 重置属性
+    reset();
+  }
+
+  private void reset() {
+    clearOnCommit = false;
+    entriesToAddOnCommit.clear();
+    entriesMissedInCache.clear();
+  }
+
+  private void flushPendingEntries() {
+    // 批量将待缓存的值放入缓存集合中
+    for (Map.Entry<Object, Object> entry : entriesToAddOnCommit.entrySet()) {
+      delegate.putObject(entry.getKey(), entry.getValue());
+    }
+    // 没有命中的缓存，通过null预占位的方式也放入缓存集合中
+    for (Object entry : entriesMissedInCache) {
+      if (!entriesToAddOnCommit.containsKey(entry)) {
+        delegate.putObject(entry, null);
+      }
+    }
+  }
+
+  private void unlockMissedEntries() {
+    for (Object entry : entriesMissedInCache) {
+      try {
+        delegate.removeObject(entry);
+      } catch (Exception e) {
+        log.warn("Unexpected exception while notifiying a rollback to the cache adapter."
+            + "Consider upgrading your cache adapter to the latest version.  Cause: " + e);
+      }
+    }
+  }
+}
+```
+
+## 执行流程
+
+简单总结了在一张缓存作用的流程图，希望对大家有用。（不知道为什么网上都是错误的认为先走一级缓存，然后才是二级缓存~）
+
+![](./images/05_15.png)
+
+## 总结
+
+在上面我们一起实践了一二级缓存在Mybatis中的使用，并深入到源码层面探讨了实现原理。但是还有一些知识需要和大家分享，并也期望通过这段对影响缓存的配置项进行总结和归纳，方便大家在应用的时候查阅。
+
+### 作用域与生命周期
 
 比较重要的对象的作用域和生命周期：
 
@@ -309,4 +569,12 @@ public void secondLevelCacheTest() {
 | 一级缓存 |        SqlSession级别         | 伴随SqlSession创建而生，随着SqlSession关闭而消亡 |                默认开启                |
 | 二级缓存 | 以Mapper对应的namesapce为纬度 |              伴随着整个应用生命周期              | 需要在对应的mapper下配置<cache/>来开启 |
 
-## 
+### 配置项
+
+- 全局配置
+  1. `cacheEnabled`，可选项为`true`或者`false`，默认为`true`。当设置为`false`时，SQL执行器由默认的`CachingExecutor`转变为`SimpleExecutor`，而二级缓存又依赖于`CachingExecutor`执行器。废话了这么其实就是设置为`false`时二级缓存就没了。
+- Mapper中的配置
+  1. 可以通过`cache`定制二级缓存的行为，具体的选项可以参照上面详细描述。
+  2. 可以通过`<cache-ref namespace=""/>`来引用其他Mapper的二级缓存
+  3. SQL语句中的`flushCache="true"`，可以理解为每次执行SQL之前都会主动清空缓存，然后再从数据库中查询结果，在查询语句中默认值为`false`，其他情况下为`true`。
+  4. SQL语句中的`useCache="true"，每次执行这条SQL的时候都会主动的使用缓存，在查询语句中默认值为`true`,其他情况下为`false`。
