@@ -573,6 +573,7 @@ public class TransactionalCache implements Cache {
 
 - 全局配置
   1. `cacheEnabled`，可选项为`true`或者`false`，默认为`true`。当设置为`false`时，SQL执行器由默认的`CachingExecutor`转变为`SimpleExecutor`，而二级缓存又依赖于`CachingExecutor`执行器。废话了这么其实就是设置为`false`时二级缓存就没了。
+  2. `localCacheScope`，可选项为`SESSION `或者`STATEMENT`，默认为`SESSION`。如果配置为`STATEMENT`本地会话仅用在语句执行上（嵌套查询可以使用到缓存），对相同 SqlSession 的不同调用将不会共享数据。
 - Mapper中的配置
   1. 可以通过`cache`定制二级缓存的行为，具体的选项可以参照上面详细描述。
   2. 可以通过`<cache-ref namespace=""/>`来引用其他Mapper的二级缓存

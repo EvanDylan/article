@@ -13,7 +13,7 @@ MyBatis 是一款优秀的ORM框架，它支持定制化 SQL、存储过程以�
 - [架构总览](./architecture.md)
 - [事务管理](./transaction.md)
 - [一二级缓存那点事](./cache.md)
-- [动态代理]()
+- [Mapper动态代理](./proxy.md)
 - [延迟加载]()
 - [annotation实现机制]()
 - [插件机制]()
