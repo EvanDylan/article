@@ -578,4 +578,4 @@ public class TransactionalCache implements Cache {
   1. 可以通过`cache`定制二级缓存的行为，具体的选项可以参照上面详细描述。
   2. 可以通过`<cache-ref namespace=""/>`来引用其他Mapper的二级缓存
   3. SQL语句中的`flushCache="true"`，可以理解为每次执行SQL之前都会主动清空缓存，然后再从数据库中查询结果，在查询语句中默认值为`false`，其他情况下为`true`。
-  4. SQL语句中的`useCache="true"，每次执行这条SQL的时候都会主动的使用缓存，在查询语句中默认值为`true`,其他情况下为`false`。
+  4. SQL语句中的`useCache="true"`，每次执行这条SQL的时候都会主动的使用缓存，在查询语句中默认值为`true`,其他情况下为`false`。
