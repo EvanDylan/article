@@ -36,13 +36,13 @@
 大概意思的是当我们使用嵌套查询的时候：
 
 - 通过一次查询返回一个列表集合（就是“1”）
-- 列表里的每条记录的其他表关联的信息都需要通过嵌套子查询才能取得（就是“N”）
+- 列表里的每条记录中与其他表关联的信息都需要通过嵌套子查询才能取得（就是“N”）
 
 这个问题会导致同时一时刻大量的SQL被执行。Mybatis可以通过延迟加载，在需要数据的时候才进行加载，将大量的查询语句分散开来。然而，当你在加载列表之后立刻进行遍历获取嵌套的数据，就会触发所有的延迟加载，性能反而会变得更加的糟糕。
 
 ## 使用
 
-1. `mybatis-config.xml`配置文件中增加以下配置可以延迟加载
+1. `mybatis-config.xml`配置文件中增加以下配置即可开启延迟加载功能
 
    ```xml
     <!-- 开启全局延迟加载功能 -->
@@ -53,9 +53,9 @@
    <setting name="lazyLoadTriggerMethods" value="equals,clone,hashCode,toString"/>
    ```
 
-2. 现有两个实体类，`Job`和`JobData`，`JobData`是`Job`的子表，并通过`JobData`中`job_id`来维护与`Job`的关系。
+2. 现有两个业务表，`job`和`job_data`，`job_data`是`job`的子表，`job_data`通过`job_id`字段来维护与`Job`的关系，`job`与`job_data`的对应关系为`1:n`。
 
-3. 创建`JobMapper.xml`、`JobDataMapper.xml`内容如下：
+3. 现在需要通过唯一`id`查询`job`记录时，将关联的所有的`job_data`的记录也查出来。分别创建`JobMapper.xml`、`JobDataMapper.xml`文件。
 
    - `JobMapper.xml`内容如下
 
