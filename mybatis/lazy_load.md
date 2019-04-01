@@ -134,3 +134,109 @@
 
 ## 原理剖析
 
+创建动态代理时序图如下:
+
+![](./images/07_03.png)
+
+核心代码`ResultSetHandler`的`ceateResultObject`内容如下：
+
+```java
+private Object createResultObject(ResultSetWrapper rsw, ResultMap resultMap, ResultLoaderMap lazyLoader, String columnPrefix) throws SQLException {
+  this.useConstructorMappings = false; // reset previous mapping result
+  final List<Class<?>> constructorArgTypes = new ArrayList<>();
+  final List<Object> constructorArgs = new ArrayList<>();
+  // 构造返回结果对象
+  Object resultObject = createResultObject(rsw, resultMap, constructorArgTypes, constructorArgs, columnPrefix);
+  if (resultObject != null && !hasTypeHandlerForResultObject(rsw, resultMap.getType())) {
+    final List<ResultMapping> propertyMappings = resultMap.getPropertyResultMappings();
+    for (ResultMapping propertyMapping : propertyMappings) {
+      // issue gcode #109 && issue #149
+      // 如果存在嵌套查询并且是懒加载
+      if (propertyMapping.getNestedQueryId() != null && propertyMapping.isLazy()) {
+        // 创建代理对象
+        resultObject = configuration.getProxyFactory().createProxy(resultObject, lazyLoader, configuration, objectFactory, constructorArgTypes, constructorArgs);
+        break;
+      }
+    }
+  }
+  this.useConstructorMappings = resultObject != null && !constructorArgTypes.isEmpty(); // set current mapping result
+  return resultObject;
+}
+```
+
+核心代码`if (propertyMapping.getNestedQueryId() != null && propertyMapping.isLazy())`，如果属性存在嵌套查询并且是懒加载，则通过`ProxyFactory`对结果对象进行代理。使用`Javassist`代理工厂核心内容如下：
+
+```java
+private static class EnhancedResultObjectProxyImpl implements MethodHandler {
+    
+  // 省略无关代码 
+    
+  @Override
+  public Object invoke(Object enhanced, Method method, Method methodProxy, Object[] args) throws Throwable {
+    final String methodName = method.getName();
+    try {
+      synchronized (lazyLoader) {
+        // 序列化时
+        if (WRITE_REPLACE_METHOD.equals(methodName)) {
+          // 未被代理的属性对象
+          Object original;
+          // 构造方法参数为空
+          if (constructorArgTypes.isEmpty()) {
+            original = objectFactory.create(type);
+            // 不为空
+          } else {
+            original = objectFactory.create(type, constructorArgTypes, constructorArgs);
+          }
+          // 将代理对象的属性copy到原对象中
+          PropertyCopier.copyBeanProperties(type, enhanced, original);
+          if (lazyLoader.size() > 0) {
+            return new JavassistSerialStateHolder(original, lazyLoader.getProperties(), objectFactory, constructorArgTypes, constructorArgs);
+          } else {
+            return original;
+          }
+        } else {
+          // 如果存在懒加载属性并且调用方式不是finalize
+          if (lazyLoader.size() > 0 && !FINALIZE_METHOD.equals(methodName)) {
+            // 如果设置aggressiveLazyLoading=true或者调用方法为(equals,clone,hashCode,toString)中的一种
+            if (aggressive || lazyLoadTriggerMethods.contains(methodName)) {
+              // 全部加载
+              lazyLoader.loadAll();
+              // 如果是set方法
+            } else if (PropertyNamer.isSetter(methodName)) {
+              final String property = PropertyNamer.methodToProperty(methodName);
+              // 移除对应属性的懒加载
+              lazyLoader.remove(property);
+              // 如果是get方法
+            } else if (PropertyNamer.isGetter(methodName)) {
+              final String property = PropertyNamer.methodToProperty(methodName);
+              if (lazyLoader.hasLoader(property)) {
+                // 执行懒加载
+                lazyLoader.load(property);
+              }
+            }
+          }
+        }
+      }
+      // 执行正常调用
+      return methodProxy.invoke(enhanced, args);
+    } catch (Throwable t) {
+      throw ExceptionUtil.unwrapThrowable(t);
+    }
+  }
+}
+```
+
+被代理对象所有的方法在执行的时候都会走`invoke`方法，关于懒加载的规则可以总结为以下几点：
+
+- 如果属性配置为懒加载并且调用属性的`get`方法时会触发懒加载动作
+- 如果配置Mybatis全局属性`aggressiveLazyLoading`为`true`并且执行的方法为`equals、clone、hashCode、toString`（默认，可通过`lazyLoadTriggerMethods`变更）则所有的懒加载属性都会被触发。
+- 如果在懒加载被触发前调用了属性的`set`方法则懒加载的特性会被移除
+
+## 配置项总结
+
+1. `lazyLoadingEnabled`延迟加载的全局开关，默认值为`false`，当设置为`true`时，所有关联对象都会延迟加载。可通过`fetchType`来覆盖配置某个关联对象的延迟加载的特性，默认值为`lazy`，当配置为`eager`时则对象不会延迟加载。
+2. `aggressiveLazyLoading`全局开关（`aggressive`不太好翻译。。。），版本小于等于3.4.1时默认为`true`，否则为`false`。当前开启时，如果调用了`lazyLoadTriggerMethods`属性中配置的方法就会触发该对象所有的属性加载，否则按需加载。
+3. ``lazyLoadTriggerMethods`指定哪些对象的方法的调用会触发对象的所有的属性加载。
+
+
+
