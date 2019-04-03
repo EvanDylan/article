@@ -15,7 +15,7 @@ Mybatis允许在SQL执行过程某些点进行拦截。默认情况，Mybatis允
 
 > The details of these classes methods can be discovered by looking at the full method signature of each, and the source code which is available with each MyBatis release. You should understand the behaviour of the method you’re overriding, assuming you’re doing something more than just monitoring calls. If you attempt to modify or override the behaviour of a given method, you’re likely to break the core of MyBatis. These are low level classes and methods, so use plug-ins with caution.
 
-大概意思：如果你想做的不仅仅方法调用的监控，那么你最好需要了解重新方法的行为（翻译为“作用”可能会更好）。如果你尝试修改或者重写这些方法的内容，你很可能会破坏Mybatis的核心功能。因为它们都是比较底层的类和方法，所以使用插件的时候要特别的小心！今天我们不是要去探讨上面每个方法的作用，而是探究Mybatis这么强大的插件机制是如何实现。
+大概意思：如果你想做的不仅仅方法调用的监控，那么你最好需要了解重写方法的行为（“了解”翻译为“作用”可能会更好）。如果你尝试修改或者重写这些方法的内容，你很可能会破坏Mybatis的核心功能。因为它们都是比较底层的类和方法，所以使用插件的时候要特别的小心！今天我们不是要去探讨上面每个方法的作用，而是探究Mybatis这么强大的插件机制是如何实现。
 
 ## 简单的示例
 
