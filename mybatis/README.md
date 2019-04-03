@@ -16,5 +16,9 @@ MyBatis 是一款优秀的ORM框架，它支持定制化 SQL、存储过程以�
 - [Mapper动态代理](./proxy.md)
 - [延迟加载](lazy_load.md)
 - [插件机制](./plugin.md)
-- [annotation实现机制]()
+- [注解式Mapper的实现原理](./annotation.md)
 - [MyBatis Spring Adapter]()
+
+博文中所有的示例地址：[demo](https://github.com/EvanDylan/mybatisdemo)
+
+带有注释的Mybatis源码地址：[mybatis](https://github.com/EvanDylan/mybatis-3)
