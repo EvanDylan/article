@@ -78,15 +78,15 @@
 
 ##  委托IOC容器
 
-上面的示例使用mapper时，再也不用调用`getMapper()`方法，直接通过spring ioc容器提供的依赖注入功能拿到mapper后即可使用。如果单独使用Mybatis时mapper接口依赖`getMapper()`方法的调用来生成代理对象，那么spring又是如何做到的呢。
+上面的示例使用mapper时，再也不用调用`getMapper()`方法，直接通过spring ioc容器提供的依赖注入功能拿到mapper后即可使用，那么spring又是如何做到的呢。
 
-配置文件中用来扫描Mapper的类`MapperScannerConfigurer`，so 这个类就是突破口了，进一步查看该类主要流程的时序图如下所示。
+在上面示例中配置文件使用的类`MapperScannerConfigurer`来扫描Mapper，so 这个类就是突破口了，进一步查看该类主要流程的时序图如下所示。
 
 ![](./images/10_02.png)
 
 时序图中`MapperScannerConfigurer`、`ClassPathMapperScanner`均为mybatis-spring项目中所实现，`ClassPathBeanDefinition`则为Spring Framework的范畴了。
 
-`MapperScannerConfigurer`实现了`BeanDefinitionRegistryPostProcessor`、`InitializingBean`等等接口。而`BeanDefinitionRegistryPostProcessor`接口，在IOC应用启动期间会调用它的`postProcessBeanDefinitionRegistry`方法，用来载入用户自定义的bean对象。
+`MapperScannerConfigurer`实现了`BeanDefinitionRegistryPostProcessor`、`InitializingBean`等等接口。而`BeanDefinitionRegistryPostProcessor`接口，在IOC容器启动期间会调用它的`postProcessBeanDefinitionRegistry`方法，用来载入用户自定义的bean对象。
 
 `MapperScannerConfigurer`自定义载入bean对象实现如下：
 
@@ -169,7 +169,7 @@ private void processBeanDefinitions(Set<BeanDefinitionHolder> beanDefinitions) {
   }
 ```
 
-`processBeanDefinitions`在`definition.setBeanClass(this.mapperFactoryBean.getClass());`这一行，将创建mapper的类从原来的mapper接口类，替换为`MapperFactoryBean`类。这也代表应用使用到的mapper对象则交由`MapperFactoryBean`创建了，其内容如下。
+`processBeanDefinitions`在`definition.setBeanClass(this.mapperFactoryBean.getClass());`这一行，将创建mapper的类从原来的mapper接口类，替换为`MapperFactoryBean`类。这也代表应用使用到的mapper对象创建工作交由`MapperFactoryBean`实现了，其内容如下。
 
 ```java
 public class MapperFactoryBean<T> extends SqlSessionDaoSupport implements FactoryBean<T> {
@@ -210,6 +210,126 @@ public class MapperFactoryBean<T> extends SqlSessionDaoSupport implements Factor
 
 mybatis-spring借助Spring Framework的两个扩展接口优雅的实现了从硬编码到自动注入。通过实现`BeanDefinitionRegistryPostProcessor`接口来完成在Spring IOC容器启动期间，将所有的mapper委托给Spring IOC容器管理。通过实现`FactoryBean`接口将mapper的创建委托`SqlSessionTemplate`的`getMapper`方法。
 
-## SqlSession的新实现
+## SqlSessionFactoryBean
 
-还记得之前提到的过的`DefaultSqlSession`的么，在Mybatis中它`SqlSession`的唯一实现类。在mybatis-spring出现后又提供了新的实现类`SqlSessionTemplate`。先思考
+配置文件中注入到`sqlSessionTemplate`中的`sqlSessionFactory`类并不是Mybatis中的`DefaultSqlSessionFactory`，而是`SqlSessionFactoryBean`。这么做的原因是什么呢？
+
+`SqlSessionFactoryBean`UML类图如下：
+
+![](./images/10_03.png)
+
+可以看到很多少重要的属性`configuration`、`configuration`、`dataSource`、`sqlSessionFactory`等都在这里了。
+
+那么这个类具体做了哪些工作呢？该类实现了`InitializingBean`、`FactoryBean`接口，工作内容进而分为两块了
+
+1. `InitializingBean`接口是在初始Bean的时候被调用，内容如下：
+
+```java
+public void afterPropertiesSet() throws Exception {
+  notNull(dataSource, "Property 'dataSource' is required");
+  notNull(sqlSessionFactoryBuilder, "Property 'sqlSessionFactoryBuilder' is required");
+  state((configuration == null && configLocation == null) || !(configuration != null && configLocation != null),
+            "Property 'configuration' and 'configLocation' can not specified with together");
+
+  this.sqlSessionFactory = buildSqlSessionFactory();
+}
+```
+
+由于`buildSqlSessionFactory()`方法内容过多就不贴出来了，大致做了以下工作：
+
+- 调用`XMLConfigBuilder`解析配置文件。
+- 创建事务管理器`SpringManagedTransactionFactory`
+- 创建`DefaultSqlSessionFactory`，并赋值给`sqlSessionFactory`
+
+2. 实现`FactoryBean`接口，内容如下：
+
+   ```java
+   public SqlSessionFactory getObject() throws Exception {
+     if (this.sqlSessionFactory == null) {
+       afterPropertiesSet();
+     }
+   
+     return this.sqlSessionFactory;
+   }
+   ```
+
+将上面创建好的`sqlSessionFactory`对象返回给`sqlSessionTemplate`使用。
+
+`SqlSessionFactoryBean`通过进一步的封装，将配置文件解析工作帮我们自动完成。通过`SpringManagedTransactionFactory`将Spring事务宝贵的传播特性也应用开来。
+
+## SqlSession的新实现SqlSessionTemplate
+
+还记得之前提到的过的`DefaultSqlSession`的么，在Mybatis中它`SqlSession`的唯一实现类。它与`SqlSessionTemplate`最大区别是前者不是线程安全的。那么mybatis-spring中是如何做到线程安全的呢？先看`SqlSessionTemplate`中对`SqlSession`接口的方法的部分实现内容：
+
+![](./images/10_04.png)
+
+很明显的可以看到执行的时候使用了`sqlSessionProxy`，那么这个代理对象做了哪些工作呢？代理类内容如下：
+
+```java
+private class SqlSessionInterceptor implements InvocationHandler {
+  @Override
+  public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+    SqlSession sqlSession = getSqlSession(
+        SqlSessionTemplate.this.sqlSessionFactory,
+        SqlSessionTemplate.this.executorType,
+        SqlSessionTemplate.this.exceptionTranslator);
+    try {
+      Object result = method.invoke(sqlSession, args);
+      if (!isSqlSessionTransactional(sqlSession, SqlSessionTemplate.this.sqlSessionFactory)) {
+        // force commit even on non-dirty sessions because some databases require
+        // a commit/rollback before calling close()
+        sqlSession.commit(true);
+      }
+      return result;
+    } catch (Throwable t) {
+      Throwable unwrapped = unwrapThrowable(t);
+      if (SqlSessionTemplate.this.exceptionTranslator != null && unwrapped instanceof PersistenceException) {
+        // release the connection to avoid a deadlock if the translator is no loaded. See issue #22
+        closeSqlSession(sqlSession, SqlSessionTemplate.this.sqlSessionFactory);
+        sqlSession = null;
+        Throwable translated = SqlSessionTemplate.this.exceptionTranslator.translateExceptionIfPossible((PersistenceException) unwrapped);
+        if (translated != null) {
+          unwrapped = translated;
+        }
+      }
+      throw unwrapped;
+    } finally {
+      if (sqlSession != null) {
+        closeSqlSession(sqlSession, SqlSessionTemplate.this.sqlSessionFactory);
+      }
+    }
+  }
+}
+```
+
+继续追踪`getSession()`的代码内容如下：
+
+```java
+public static SqlSession getSqlSession(SqlSessionFactory sessionFactory, ExecutorType executorType, PersistenceExceptionTranslator exceptionTranslator) {
+
+  notNull(sessionFactory, NO_SQL_SESSION_FACTORY_SPECIFIED);
+  notNull(executorType, NO_EXECUTOR_TYPE_SPECIFIED);
+
+  SqlSessionHolder holder = (SqlSessionHolder) TransactionSynchronizationManager.getResource(sessionFactory);
+
+  SqlSession session = sessionHolder(executorType, holder);
+  if (session != null) {
+    return session;
+  }
+
+  LOGGER.debug(() -> "Creating a new SqlSession");
+  session = sessionFactory.openSession(executorType);
+
+  registerSessionHolder(sessionFactory, executorType, exceptionTranslator, session);
+
+  return session;
+}
+```
+
+最终`SqlSession`通过`TransactionSynchronizationManager`保持，并通过`sessionFactory`作为key
+
+获取。很容易可以推测内部是使用了`ThreadLocal`来实现线程间的变量隔离，来达到`sqlSession`线程安全的目的。
+
+## 结束语
+
+本篇对mybatis-spring项目的关键特性原理进行了分析。比如Mybatis中的mappe是如何被Spring的IOC容器所管理、sqlSession是如何实现线程安全的等、以及Spring的事务传播机制等。希望本篇能够让大家在应用mybatis-spring的同时能够理解其底层的作用原理，在遇到问题的时候能够从更深的层次去排查、去思考。

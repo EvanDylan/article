@@ -127,11 +127,59 @@ public void prepareSqlSession() {
 
 ![](./images/04_02.jpg)
 
-在关键步骤`newTransaction`方法签名为：`Transaction newTransaction(DataSource dataSource, TransactionIsolationLevel level, boolean autoCommit);`通过传入连接，事务的隔离级别、是否自动提交等。
+`DefaultSqlSession`中`openSessionFromDataSource`方法内容如下:
+
+```java
+private SqlSession openSessionFromDataSource(ExecutorType execType, TransactionIsolationLevel level, boolean autoCommit) {
+  Transaction tx = null;
+  try {
+    final Environment environment = configuration.getEnvironment();
+    final TransactionFactory transactionFactory = getTransactionFactoryFromEnvironment(environment);
+    tx = transactionFactory.newTransaction(environment.getDataSource(), level, autoCommit);
+    final Executor executor = configuration.newExecutor(tx, execType);
+    return new DefaultSqlSession(configuration, executor, autoCommit);
+  } catch (Exception e) {
+    closeTransaction(tx); // may have fetched a connection so lets call close()
+    throw ExceptionFactory.wrapException("Error opening session.  Cause: " + e, e);
+  } finally {
+    ErrorContext.instance().reset();
+  }
+}
+```
+
+这里通过`environment`获取事务工厂，并通过调用`newTransaction`方法创建事务连接然后传入执行器`Executor`。
 
 ### 事务提交、回滚
 
+`BaseExecutor`中事务提交和回滚的方法内容如下：
 
+```java
+@Override
+public void commit(boolean required) throws SQLException {
+  if (closed) {
+    throw new ExecutorException("Cannot commit, transaction is already closed");
+  }
+  clearLocalCache();
+  flushStatements();
+  if (required) {
+    transaction.commit();
+  }
+}
 
+@Override
+public void rollback(boolean required) throws SQLException {
+  if (!closed) {
+    try {
+      clearLocalCache();
+      flushStatements(true);
+    } finally {
+      if (required) {
+        transaction.rollback();
+      }
+    }
+  }
+}
+```
 
+很容可以推断出，Mybatis通过执行器在适时地地方通过调用这两个方法来完成事务的提交和回滚的操作。
 
