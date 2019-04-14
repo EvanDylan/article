@@ -11,9 +11,7 @@
 
 [服务注册与发现](./service_register_discovery.md)
 
-[集群节点之间的通信](./server_node_communication.md)
+[集群节点数据同步](./server_node_communication.md)
 
-[客户端与服务端通信](./cs_communication.md)
-
-[eureka高可用之术](./load_balance)
+[Eureka高可用之术](./high_availability.md)
 
