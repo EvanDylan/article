@@ -15,3 +15,5 @@
 
 [Eureka高可用之术](./high_availability.md)
 
+[不仅仅是Eureka](./good_bad_other.md)
+
