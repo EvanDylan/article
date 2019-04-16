@@ -135,4 +135,4 @@ Eureka相关的动词：
    }
    ```
 
-   这个类既提供服务，也担当了消费方的角色。访问http://localhost:8080/consumer，即可看到服务方返回"hello world"的内容。
+   这个类既提供服务，也担当了消费方的角色。访问[http://localhost:8080/consumer](http://localhost:8080/consumer)，即可看到服务方返回"hello world"的内容。
