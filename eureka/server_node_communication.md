@@ -186,6 +186,125 @@ public void initialize() {
 - 使用HTTP协议，
 - 被动接受由**Provider** 服务提供方发送的`registry`、`cancle`、`renew`请求。接受到请求后，遍历其他的**Peer**发送相同的请求完成节点间的数据同步操作。
 
-概括完了原理，下面进行源码分析过程，以下的接口是为了节点的复制的目的而设。
+概括完了原理，下面进行源码分析过程。服务端负责执行执行同步的核心关键类为`PeerAwareInstanceRegistryImpl`。用来处理数据同步操作的几个关键方法内容如下：
 
-- 
+```java
+@Override
+public void register(final InstanceInfo info, final boolean isReplication) {
+    int leaseDuration = Lease.DEFAULT_DURATION_IN_SECS;
+    if (info.getLeaseInfo() != null && info.getLeaseInfo().getDurationInSecs() > 0) {
+        leaseDuration = info.getLeaseInfo().getDurationInSecs();
+    }
+    super.register(info, leaseDuration, isReplication);
+    replicateToPeers(Action.Register, info.getAppName(), info.getId(), info, null, isReplication);
+}
+
+@Override
+public boolean renew(final String appName, final String id, final boolean isReplication) {
+    if (super.renew(appName, id, isReplication)) {
+        replicateToPeers(Action.Heartbeat, appName, id, null, null, isReplication);
+        return true;
+    }
+    return false;
+}
+
+public boolean cancel(final String appName, final String id,
+                          final boolean isReplication) {
+    if (super.cancel(appName, id, isReplication)) {
+        replicateToPeers(Action.Cancel, appName, id, null, null, isReplication);
+        synchronized (lock) {
+            if (this.expectedNumberOfClientsSendingRenews > 0) {
+                // Since the client wants to cancel it, reduce the number of clients to send renews
+                this.expectedNumberOfClientsSendingRenews = this.expectedNumberOfClientsSendingRenews - 1;
+                updateRenewsPerMinThreshold();
+            }
+        }
+        return true;
+    }
+    return false;
+}
+```
+
+所有的方法最终都是通过调用方法`replicateToPeers`来完成同步工作。
+
+```java
+private void replicateToPeers(Action action, String appName, String id,
+                              InstanceInfo info /* optional */,
+                              InstanceStatus newStatus /* optional */, boolean isReplication) {
+    Stopwatch tracer = action.getTimer().start();
+    try {
+        if (isReplication) {
+            numberOfReplicationsLastMin.increment();
+        }
+        // If it is a replication already, do not replicate again as this will create a poison replication
+        if (peerEurekaNodes == Collections.EMPTY_LIST || isReplication) {
+            return;
+        }
+
+        for (final PeerEurekaNode node : peerEurekaNodes.getPeerEurekaNodes()) {
+            // If the url represents this host, do not replicate to yourself.
+            if (peerEurekaNodes.isThisMyUrl(node.getServiceUrl())) {
+                continue;
+            }
+            replicateInstanceActionsToPeers(action, appName, id, info, newStatus, node);
+        }
+    } finally {
+        tracer.stop();
+    }
+}
+
+private void replicateInstanceActionsToPeers(Action action, String appName,
+                                                 String id, InstanceInfo info, InstanceStatus newStatus,
+                                                 PeerEurekaNode node) {
+    try {
+        InstanceInfo infoFromRegistry = null;
+        CurrentRequestVersion.set(Version.V2);
+        switch (action) {
+            case Cancel:
+                node.cancel(appName, id);
+                break;
+            case Heartbeat:
+                InstanceStatus overriddenStatus = overriddenInstanceStatusMap.get(id);
+                infoFromRegistry = getInstanceByAppAndId(appName, id, false);
+                node.heartbeat(appName, id, infoFromRegistry, overriddenStatus, false);
+                break;
+            case Register:
+                node.register(info);
+                break;
+            case StatusUpdate:
+                infoFromRegistry = getInstanceByAppAndId(appName, id, false);
+                node.statusUpdate(appName, id, newStatus, infoFromRegistry);
+                break;
+            case DeleteStatusOverride:
+                infoFromRegistry = getInstanceByAppAndId(appName, id, false);
+                node.deleteStatusOverride(appName, id, infoFromRegistry);
+                break;
+        }
+    } catch (Throwable t) {
+        logger.error("Cannot replicate information to {} for action {}", node.getServiceUrl(), action.name(), t);
+    }
+}
+```
+
+而最终负责执行真正同步工作的是`PeerEurekaNode`的方法。
+
+```java
+public void register(final InstanceInfo info) throws Exception {
+    long expiryTime = System.currentTimeMillis() + getLeaseRenewalOf(info);
+    batchingDispatcher.process(
+            taskId("register", info),
+            new InstanceReplicationTask(targetHost, Action.Register, info, null, true) {
+                public EurekaHttpResponse<Void> execute() {
+                    return replicationClient.register(info);
+                }
+            },
+            expiryTime
+    );
+}
+```
+
+从上面代码中可以大致推测出，最终通过线程池异步的执行HTTP调用来完成最终的数据同步过程。（关于异步执行设计原理后续单独开篇剖析）。
+
+##  总结概述
+
+本篇通过分析Eureka的启动过程，剖析了集群模式下节点之间的信息同步过程。同时介绍了每个节点启动的后台线程的作用，有的用来剔除无效的注册节点信息，有的用来更新集群的节点信息，有的则用来更新来自客户端的续约阀值信息（该值和Eureka Server的自我保护机制息息相关，后面再[高可用篇章](./high_availability.md)会进行介绍）。整体的设计还是非常简单有效的，但是在代码实现上稍显复杂。
