@@ -8,7 +8,7 @@
 
 > **高可用性**（英语：high availability，缩写为 HA），[IT](https://zh.wikipedia.org/wiki/IT)术语，指系统无中断地执行其功能的能力，代表系统的[可用性](https://zh.wikipedia.org/wiki/%E5%8F%AF%E7%94%A8%E6%80%A7)程度。是进行系统设计时的准则之一。高可用性系统与构成该系统的各个组件相比可以更长时间运行。高可用性通常通过提高系统的容错能力来实现。定义一个系统怎样才算具有高可用性往往需要根据每一个案例的具体情况来具体分析。
 >
-> 其度量方式，是根据系统损害、无法使用的时间，以及由无法运作恢复到可运作状况的时间，与系统总运作时间的比较。计算公式为: {\displaystyle A={\rm {\frac {MTBF}{MTBF+MTTR}}}}![{\displaystyle A={\rm {\frac {MTBF}{MTBF+MTTR}}}}](https://wikimedia.org/api/rest_v1/media/math/render/svg/294530834e910381725a2dd83c38873aac055da5)
+> 其度量方式，是根据系统损害、无法使用的时间，以及由无法运作恢复到可运作状况的时间，与系统总运作时间的比较。计算公式为:![](https://wikimedia.org/api/rest_v1/media/math/render/svg/294530834e910381725a2dd83c38873aac055da5)
 >
 > A（可用性），MTBF(平均故障间隔)，MDT(平均修复时间)
 >
