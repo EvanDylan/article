@@ -546,7 +546,7 @@ public class TransactionalCache implements Cache {
 
 简单总结了在一张缓存作用的流程图，希望对大家有用。（不知道为什么网上都是错误的认为先走一级缓存，然后才是二级缓存~）
 
-![](./images/05_15.png)
+![](./images/05_13.png)
 
 ## 总结
 
