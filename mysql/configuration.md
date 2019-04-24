@@ -38,9 +38,10 @@
 
 ## 慢日志
 
-- `slow_query_log=1`启用慢日志记录功能
-- `slow_query_log_file=/var/log/mysql/slow_queries.log`指定慢日志记录位置
-- `long_query_time=1`当查询超过该值时则记录下来，单位ms。
+- `slow_query_log=1`启用慢日志记录功能。
+- `slow_query_log_file=/var/log/mysql/slow_queries.log`指定慢日志记录位置。
+- `long_query_time=1`当查询超过该值时则记录下来，单位秒，默认为10S。
+- `log_queries_not_using_indexes=1`，记录没有使用到索引的查询。
 
 ## 查询缓存
 
