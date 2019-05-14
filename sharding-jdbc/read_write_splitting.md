@@ -35,7 +35,44 @@ sharding-jdbc核心功能以下几个引擎所构成：解析引擎、路由引�
 
 ### 读从库的实现
 
+先来一张时序图，我们先从全局的视角体会下一个查询SQL执行的大致流程。
 
+![](./images/05_01.jpg)
+
+图中被标注出来的部分是我们下面将要分析的重点部分。
+
+代码执行入口为`ShardingPreparedStatement`中`execute()`，方法内容如下：
+
+```java
+@Override
+public boolean execute() throws SQLException {
+    try {
+        clearPrevious();
+        // 负责SQL解析、改写、路由等
+        shard();
+        initPreparedStatementExecutor();
+        // 对改写的SQL进行统一执行
+        return preparedStatementExecutor.execute();
+    } finally {
+        clearBatch();
+    }
+}
+```
+
+进一步追踪`shard()`方法，会进入到`PreparedQueryShardingEngine`的`shard()`，方法内容如下：
+
+```java
+public SQLRouteResult shard(final String sql, final List<Object> parameters) {
+    List<Object> clonedParameters = cloneParameters(parameters);
+    SQLRouteResult result = route(sql, clonedParameters);
+    result.getRouteUnits().addAll(HintManager.isDatabaseShardingOnly() ? convert(sql, clonedParameters, result) : rewriteAndConvert(sql, clonedParameters, result));
+    if (shardingProperties.getValue(ShardingPropertiesConstant.SQL_SHOW)) {
+        boolean showSimple = shardingProperties.getValue(ShardingPropertiesConstant.SQL_SIMPLE);
+        SQLLogger.logSQL(sql, showSimple, result.getSqlStatement(), result.getRouteUnits());
+    }
+    return result;
+}
+```
 
 ## 写主库的实现
 
