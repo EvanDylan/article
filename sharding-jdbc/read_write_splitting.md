@@ -64,7 +64,14 @@ public boolean execute() throws SQLException {
 ```java
 public SQLRouteResult shard(final String sql, final List<Object> parameters) {
     List<Object> clonedParameters = cloneParameters(parameters);
+    // 执行路由操作(其中隐含了SQL解析过程)
     SQLRouteResult result = route(sql, clonedParameters);
+    /**
+      * 这里分两种情况讨论:
+      * 1. 如果仅仅基于库做了分片,则原来的SQL不需要改写,直接发送给路由之后的实际数据源执行即可
+      * 2. 如果基于表做了分片,则需要将原来的SQL改写(实际的表名已经发生了变化),然后再发送给路由的数据源执行
+      * 这里添加的对象RouteUnit其抽象维度为数据源+SQL.
+      */
     result.getRouteUnits().addAll(HintManager.isDatabaseShardingOnly() ? convert(sql, clonedParameters, result) : rewriteAndConvert(sql, clonedParameters, result));
     if (shardingProperties.getValue(ShardingPropertiesConstant.SQL_SHOW)) {
         boolean showSimple = shardingProperties.getValue(ShardingPropertiesConstant.SQL_SIMPLE);
@@ -73,6 +80,134 @@ public SQLRouteResult shard(final String sql, final List<Object> parameters) {
     return result;
 }
 ```
+
+继续深入`PreparedQueryShardingEngine`的`route`方法，内容如下：
+
+```java
+protected SQLRouteResult route(final String sql, final List<Object> parameters) {
+    return routingEngine.route(parameters);
+}
+```
+
+`PreparedStatementRoutingEngine`的`route`方法内容如下：
+
+```java
+public SQLRouteResult route(final List<Object> parameters) {
+    if (null == sqlStatement) {
+        // 解析SQL
+        sqlStatement = shardingRouter.parse(logicSQL, true);
+    }
+    /**
+      * 执行分片规则
+      * 1. 根据分库分表规则统计需要执行的SQL的实际数据库与表名
+      * 2. 根据读写分离规则再次过滤需要执行的SQL的实际数据与表名
+      */
+    return masterSlaveRouter.route(shardingRouter.route(logicSQL, parameters, sqlStatement));
+}
+```
+
+这里我们先将关注的重点放到分片规则执行过程，执行过程分两步骤：
+
+- 分库分表规则统计需要执行的SQL的实际数据库与表名
+- 读写分离规则再次过滤需要执行的SQL的实际数据与表名
+
+第一个步骤`ParsingSQLRouter`中`route()`方法内容如下：
+
+```java
+public SQLRouteResult route(final String logicSQL, final List<Object> parameters, final SQLStatement sqlStatement) {
+    Optional<GeneratedKey> generatedKey = sqlStatement instanceof InsertStatement
+            ? GeneratedKey.getGenerateKey(shardingRule, parameters, (InsertStatement) sqlStatement) : Optional.<GeneratedKey>absent();
+    SQLRouteResult result = new SQLRouteResult(sqlStatement, generatedKey.orNull());
+    OptimizeResult optimizeResult = OptimizeEngineFactory.newInstance(shardingRule, sqlStatement, parameters, generatedKey.orNull()).optimize();
+    if (generatedKey.isPresent()) {
+        setGeneratedKeys(result, generatedKey.get());
+    }
+    /**
+     * 对于子查询需要校验分片规则
+     * 1. 必须存在分片字段
+     * 2. 分片必须是同一个字段
+     * 如果存在多个相同的分片字段则需要合并
+     */
+    boolean needMerge = false;
+    if (sqlStatement instanceof SelectStatement) {
+        needMerge = isNeedMergeShardingValues((SelectStatement) sqlStatement);
+    }
+    if (needMerge) {
+        checkSubqueryShardingValues(sqlStatement, optimizeResult.getShardingConditions());
+        mergeShardingValues(optimizeResult.getShardingConditions());
+    }
+    /**
+     * 根据分库分表规则统计需要执行的SQL的实际数据库与表名
+     */
+    RoutingResult routingResult = RoutingEngineFactory.newInstance(shardingRule, shardingMetaData.getDataSource(), sqlStatement, optimizeResult).route();
+
+    // 改写SQL的limit
+    if (sqlStatement instanceof SelectStatement && null != ((SelectStatement) sqlStatement).getLimit() && !routingResult.isSingleRouting()) {
+        result.setLimit(getProcessedLimit(parameters, (SelectStatement) sqlStatement));
+    }
+    if (needMerge) {
+        Preconditions.checkState(1 == routingResult.getTableUnits().getTableUnits().size(), "Must have one sharding with subquery.");
+    }
+    result.setRoutingResult(routingResult);
+    result.setOptimizeResult(optimizeResult);
+    return result;
+}
+```
+
+核心代码通过`RoutingEngineFactory`创建`RoutingEngine`然后调用它的`route`方法。
+
+```java
+public static RoutingEngine newInstance(final ShardingRule shardingRule,
+                                            final ShardingDataSourceMetaData shardingDataSourceMetaData, final SQLStatement sqlStatement, final OptimizeResult optimizeResult) {
+    Collection<String> tableNames = sqlStatement.getTables().getTableNames();
+    // 事务控制语句commit、rollback等
+    if (SQLType.TCL == sqlStatement.getType()) {
+        return new DatabaseBroadcastRoutingEngine(shardingRule);
+    }
+    // CREATE, ALTER, DROP, TRUNCATE等
+    if (SQLType.DDL == sqlStatement.getType()) {
+        return new TableBroadcastRoutingEngine(shardingRule, sqlStatement);
+    }
+    // Database administrator Language
+    if (SQLType.DAL == sqlStatement.getType()) {
+        return getDALRoutingEngine(shardingRule, sqlStatement, tableNames);
+    }
+    // Database control Language
+    if (SQLType.DCL == sqlStatement.getType()) {
+        return getDCLRoutingEngine(shardingRule, sqlStatement, shardingDataSourceMetaData);
+    }
+    // 是否属于默认数据源,区别于分片之后的数据源
+    if (shardingRule.isAllInDefaultDataSource(tableNames)) {
+        return new DefaultDatabaseRoutingEngine(shardingRule, tableNames);
+    }
+    // 广播表
+    if (shardingRule.isAllBroadcastTables(tableNames)) {
+        return SQLType.DQL == sqlStatement.getType() ? new UnicastRoutingEngine(shardingRule, tableNames) : new DatabaseBroadcastRoutingEngine(shardingRule);
+    }
+    if (optimizeResult.getShardingConditions().isAlwaysFalse() || tableNames.isEmpty()) {
+        return new UnicastRoutingEngine(shardingRule, tableNames);
+    }
+    // 如果分片表数量为1或者分片的表分片逻辑相同（绑定关系）
+    Collection<String> shardingTableNames = shardingRule.getShardingLogicTableNames(tableNames);
+    if (1 == shardingTableNames.size() || shardingRule.isAllBindingTables(shardingTableNames)) {
+        return new StandardRoutingEngine(sqlStatement, shardingRule, shardingTableNames.iterator().next(), optimizeResult);
+    }
+    // 更为复杂的情况,同时存在多个分片字段,并且分片逻辑不一样
+    return new ComplexRoutingEngine(sqlStatement, shardingRule, tableNames, optimizeResult);
+}
+```
+
+可以看到`RoutingEngineFactory`根据不同的场景选择不同的路由实现，我们以最为常见的`StandardRoutingEngine`的实现为例，分析它的`route`方法实现，内容如下：
+
+```java
+public RoutingResult route() {
+    return generateRoutingResult(getDataNodes(shardingRule.getTableRule(logicTableName)));
+}
+```
+
+按照方法的调用顺序挨个分析其执行过程：
+
+- 
 
 ## 写主库的实现
 
