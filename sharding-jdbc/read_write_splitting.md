@@ -207,7 +207,30 @@ public RoutingResult route() {
 
 按照方法的调用顺序挨个分析其执行过程：
 
-- 
+- `shardingRule.getTableRule(logicTableName)`
+
+  ```java
+  public TableRule getTableRule(final String logicTableName) {
+      // 根据逻辑表名,匹配实际表以及其对应的物理库名等信息
+      Optional<TableRule> tableRule = findTableRule(logicTableName);
+      if (tableRule.isPresent()) {
+          return tableRule.get();
+      }
+      // 是否为广播表
+      if (isBroadcastTable(logicTableName)) {
+          return new TableRule(shardingDataSourceNames.getDataSourceNames(), logicTableName);
+      }
+      // 如果前两者都不是,并且默认数据源不为空
+      if (!Strings.isNullOrEmpty(shardingDataSourceNames.getDefaultDataSourceName())) {
+          return new TableRule(shardingDataSourceNames.getDefaultDataSourceName(), logicTableName);
+      }
+      throw new ShardingConfigurationException("Cannot find table rule and default data source with logic table: '%s'", logicTableName);
+  }
+  ```
+
+- `getDataNodes(final TableRule tableRule)`
+
+  
 
 ## 写主库的实现
 
