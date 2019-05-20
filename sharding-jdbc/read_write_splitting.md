@@ -33,7 +33,7 @@ sharding-jdbc核心功能以下几个引擎所构成：解析引擎、路由引�
 
 根据以上几个引擎的功能特点，可以推测出读写分离的功能主要在路由和改写两个步骤实现的。下面我们以读和写的两种业务场景分别展开进行分析实现过程。
 
-### 读从库的实现
+### 读写分离的实现
 
 先来一张时序图，我们先从全局的视角体会下一个查询SQL执行的大致流程。
 
@@ -230,7 +230,81 @@ public RoutingResult route() {
 
 - `getDataNodes(final TableRule tableRule)`
 
+  ```java
+  private Collection<DataNode> getDataNodes(final TableRule tableRule) {
+      /**
+       * 是否为Hint方式分片
+       * 区别于通过SQL解析的方式确定分片策略,通过Hint手动指定的方式
+       */
+      if (shardingRule.isRoutingByHint(tableRule)) {
+          return routeByHint(tableRule);
+      }
+      /**
+       * 是否为通过条件分片
+       */
+      if (isRoutingByShardingConditions(tableRule)) {
+          return routeByShardingConditions(tableRule);
+      }
+      return routeByMixedConditions(tableRule);
+  }
+  ```
+
+- `generateRoutingResult()`
+
+  ```java
+  private RoutingResult generateRoutingResult(final Collection<DataNode> routedDataNodes) {
+      RoutingResult result = new RoutingResult();
+      for (DataNode each : routedDataNodes) {
+          TableUnit tableUnit = new TableUnit(each.getDataSourceName());
+          tableUnit.getRoutingTables().add(new RoutingTable(logicTableName, each.getTableName()));
+          result.getTableUnits().getTableUnits().add(tableUnit);
+      }
+      return result;
+  }
+  ```
   
+  通过以上三个步骤，第一步根据规则匹配实际物理表，第二步根据规则匹配实际数据源，第三步将匹配的内容返回做进一步处理。
 
-## 写主库的实现
+到这里已经完成的分库分表规则的解析匹配过程，下一步继续对主从规则的匹配过程，内容如下：
 
+```java
+private void route(final MasterSlaveRule masterSlaveRule, final SQLRouteResult sqlRouteResult) {
+    Collection<TableUnit> toBeRemoved = new LinkedList<>();
+    Collection<TableUnit> toBeAdded = new LinkedList<>();
+    for (TableUnit each : sqlRouteResult.getRoutingResult().getTableUnits().getTableUnits()) {
+        // 判断是否为同一个逻辑数据源,不同则跳过
+        if (!masterSlaveRule.getName().equalsIgnoreCase(each.getDataSourceName())) {
+            continue;
+        }
+        // 移除当前each,因为当前each中保持的数据源还是逻辑库
+        toBeRemoved.add(each);
+        String actualDataSourceName;
+        /**
+         * 判断是否主库：
+         * 1. 不是DQL(Data Query Language)
+         * 2. 通过一个线程上次是否访问了主库(由ThreadLocal保持)
+         * 3. 通过Hint方式直接指定访问主库
+         */
+        if (isMasterRoute(sqlRouteResult.getSqlStatement().getType())) {
+            // 在ThreadLocal中设定标识,标记当前线程访问主库,那么后续当前线程的访问都会强制走主库
+            MasterVisitedManager.setMasterVisited();
+            // 获取逻辑数据源对应的主库真是数据源
+            actualDataSourceName = masterSlaveRule.getMasterDataSourceName();
+        } else {
+            // 如果需要访问主库,通过轮训算法筛选一个从库数据源
+            actualDataSourceName = masterSlaveRule.getLoadBalanceAlgorithm().getDataSource(
+                    masterSlaveRule.getName(), masterSlaveRule.getMasterDataSourceName(), new ArrayList<>(masterSlaveRule.getSlaveDataSourceNames()));
+        }
+        // 创建包含真实的物理数据源
+        toBeAdded.add(createNewTableUnit(actualDataSourceName, each));
+    }
+    sqlRouteResult.getRoutingResult().getTableUnits().getTableUnits().removeAll(toBeRemoved);
+    sqlRouteResult.getRoutingResult().getTableUnits().getTableUnits().addAll(toBeAdded);
+}
+```
+
+通过上面`isMasterRoute()`的方法可得知
+
+- 当SQL为查询时会走从库，当SQL为其他的类型时会走主库。
+- 当一个线程执行了非查询类型的SQL，比如做了更新删除等操作时，后续的步骤都会强制走主库
+- 可以通过Hint强制指定走主库。
