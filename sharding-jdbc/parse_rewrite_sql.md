@@ -16,7 +16,7 @@
 
 ## 解析
 
-对于抽象语法树的构建工作其内容过于偏门、过于专业这里就不过多的展开讲解。（笔者水平有限大家多多包涵）
+对于抽象语法树的构建，由于其内容过于偏门和专业这里就不过多的展开讲解。（笔者水平有限大家多多包涵）
 
 ## 改写
 
@@ -24,23 +24,129 @@ sharding-jdbc改写引擎执行的改写的结构图如下所示：
 
 ![](./images/06_01.png)
 
-下面挑几个比较有代表性的改写点再结合源码进行剖析详细过程：
+下面挑个比较有代表性的改写点再结合源码进行剖析详细过程：
 
 - 表名称改写
-- 自增主键补列
-- 分页修正
 
 ### 表名称改写
 
-移步至[读写分离](./read_write_splitting.md)
+在上篇的[读写分离](./read_write_splitting.md)中就路由的过程（主要涉及库、表的路由，将逻辑上的库名和表名根据已知的分片规则映射为实际的物理名），那么下一步自然而然的就开始SQL的改写。改写的代码及注释内容如下：
 
-### 自增主键补列
+```java
+public SQLRouteResult shard(final String sql, final List<Object> parameters) {
+    List<Object> clonedParameters = cloneParameters(parameters);
+    // 执行路由操作(其中隐含了SQL解析过程)
+    SQLRouteResult result = route(sql, clonedParameters);
+    /**
+     * 这里分两种情况讨论:
+     * 1. 如果仅仅基于库做了分片,则原来的SQL不需要改写,直接发送给路由之后的实际数据源执行即可
+     * 2. 如果基于表做了分片,则需要将原来的SQL改写(实际的表名已经发生了变化),然后再发送给路由的数据源执行
+     * 这里添加的对象RouteUnit其抽象维度为数据源+SQL.
+     */
+    result.getRouteUnits().addAll(HintManager.isDatabaseShardingOnly() ? convert(sql, clonedParameters, result) : rewriteAndConvert(sql, clonedParameters, result));
+    if (shardingProperties.getValue(ShardingPropertiesConstant.SQL_SHOW)) {
+        boolean showSimple = shardingProperties.getValue(ShardingPropertiesConstant.SQL_SIMPLE);
+        SQLLogger.logSQL(sql, showSimple, result.getSqlStatement(), result.getRouteUnits());
+    }
+    return result;
+}
+```
 
-### 分页修正
+我们本次要讨论的内容，涉及的关键代码就一行，内容如下：
 
+```java
+HintManager.isDatabaseShardingOnly() ? convert(sql, clonedParameters, result) : rewriteAndConvert(sql, clonedParameters, result)
+```
 
+对代码解读如下：首先判断当前执行的SQL分片是否仅仅只是数据库分片即可，如果是那么SQL语句就不需要进行任何改写直接将原生的SQL语句发送到对应的数据源执行即可，但是如果涉及到需要对SQL改写的场景（表字段分片、补列等等）直接将原生SQL发送到数据库执行就不对了。改写的代码进一步剖析内容如下：
 
+```java
+ private Collection<RouteUnit> rewriteAndConvert(final String sql, final List<Object> parameters, final SQLRouteResult sqlRouteResult) {
+        SQLRewriteEngine rewriteEngine = new SQLRewriteEngine(shardingRule, sql, databaseType, sqlRouteResult, parameters, sqlRouteResult.getOptimizeResult());
+        // 执行改写过程，并将执行中间结果保持至sqlBuilder中，需要执行替换的部分已占位符的形式保持
+        SQLBuilder sqlBuilder = rewriteEngine.rewrite(sqlRouteResult.getRoutingResult().isSingleRouting());
+        Collection<RouteUnit> result = new LinkedHashSet<>();
+        for (TableUnit each : sqlRouteResult.getRoutingResult().getTableUnits().getTableUnits()) {
+            // 执行上面待替换部分，并真正需要执行的SQL语句
+            result.add(new RouteUnit(each.getDataSourceName(), rewriteEngine.generateSQL(each, sqlBuilder, metaData.getDataSource())));
+        }
+        return result;
+    }
+```
 
+剖析的执行步骤：
+
+- 先执行通过改写引擎并执行其`rewrite`方法，将改写的信息保持在`sqlBuilder`中。
+- 通过改写引擎进一步执行其`generateSQL`方法，将上一步改写的中间信息生成真正的SQL语句。
+- 遍历`tableUnits`，并将改写之后的sql重新赋值。
+
+`rewrite`方法内容如下：
+
+```java
+public SQLBuilder rewrite(final boolean isSingleRouting) {
+    SQLBuilder result = new SQLBuilder(parameters);
+    if (sqlTokens.isEmpty()) {
+        return appendOriginalLiterals(result);
+    }
+    // 初始化不需要处理的sql
+    appendInitialLiterals(!isSingleRouting, result);
+    // 追加sql和需要替换部分
+    appendTokensAndPlaceholders(!isSingleRouting, result);
+    reviseParameters();
+    return result;
+}
+```
+
+`generateSQL`方法内容如下：
+
+```java
+public SQLUnit generateSQL(final TableUnit tableUnit, final SQLBuilder sqlBuilder, final ShardingDataSourceMetaData shardingDataSourceMetaData) {
+    rewriteHook.start(tableUnit);
+    try {
+        SQLUnit result = sqlBuilder.toSQL(tableUnit, getTableTokens(tableUnit), shardingRule, shardingDataSourceMetaData);
+        rewriteHook.finishSuccess(result);
+        return result;
+        // CHECKSTYLE:OFF
+    } catch (final Exception ex) {
+        // CHECKSTYLE:ON
+        rewriteHook.finishFailure(ex);
+        throw ex;
+    }
+}
+```
+
+进一步追踪`toSQL`源码内容如下：
+
+```java
+public SQLUnit toSQL(final TableUnit tableUnit, final Map<String, String> logicAndActualTableMap, final ShardingRule shardingRule, final ShardingDataSourceMetaData shardingDataSourceMetaData) {
+        StringBuilder result = new StringBuilder();
+        List<Object> insertParameters = new LinkedList<>();
+        // segments中保持了需要做替换操作的占位符信息
+        for (Object each : segments) {
+            if (!(each instanceof ShardingPlaceholder)) {
+                result.append(each);
+                continue;
+            }
+            // 逻辑表名
+            String logicTableName = ((ShardingPlaceholder) each).getLogicTableName();
+            // 实际表名
+            String actualTableName = logicAndActualTableMap.get(logicTableName);
+            if (each instanceof TablePlaceholder) {
+                // 执行表名替换操作
+                appendTablePlaceholder((TablePlaceholder) each, actualTableName, result);
+            } else if (each instanceof SchemaPlaceholder) {
+                appendSchemaPlaceholder(shardingRule, shardingDataSourceMetaData, actualTableName, result);
+            } else if (each instanceof IndexPlaceholder) {
+                appendIndexPlaceholder((IndexPlaceholder) each, actualTableName, result);
+            } else if (each instanceof InsertValuesPlaceholder) {
+                appendInsertValuesPlaceholder(tableUnit, (InsertValuesPlaceholder) each, insertParameters, result);
+            } else {
+                result.append(each);
+            }
+        }
+        return insertParameters.isEmpty() ? new SQLUnit(result.toString(), new ArrayList<>(parameters)) : new SQLUnit(result.toString(), insertParameters);
+    }
+```
 
 ## 参考文献
 
