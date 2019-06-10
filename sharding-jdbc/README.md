@@ -38,12 +38,12 @@
 
 1. [总览](./overview.md)
 2. [快速入门](./quickstart.md)
-3. [框架是如何工作的]()
-4. [常见的分片策略]()
+3. [框架是如何工作的](./how.md)
+4. [常见的分片策略](./strategy.md)
 5. [读写分离](./read_write_splitting.md)
-7. [SQL解析及改写]()
+7. [SQL解析及改写](./read_write_splitting.md)
 9. [归并处理]()
-10. [分布式事务]()
+10. [分布式事务](./distributed_trasaction.md)
 
 参考文献：
 
